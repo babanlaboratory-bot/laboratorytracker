@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Laboratory Statistics Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Supabase JavaScript Library CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-gray-50">
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // --- Supabase Client Connection Setup ---
+        const SUPABASE_URL = 'https://qwvaesdivxiuvyugnfcb.supabase.co';
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF3dmFlc2RpdnhpdXZ5dWduZmNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5OTI4NDksImV4cCI6MjA5ODU2ODg0OX0.VDxZfUf1bCgI3gkuREgVRtobKwIwRwob3FqxLVDcY98';
+        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        function LabTracker() {
+            // State initialized as empty arrays since records are fetched from Supabase asynchronously
+            const [entries, setEntries] = useState([]);
+            const [testDirectory, setTestDirectory] = useState([]);
+
+            // Default static catalog to seed Supabase database table if it is blank
+            const defaultTestDirectory = [
+                { name: 'Glucose (Random/Fasting)', parameters: 1 },
+                { name: 'Electrolytes (Na/K/Cl)', parameters: 3 },
+                { name: 'Liver Function Test (LFT)', parameters: 9 },
+                { name: 'Lipid Profile', parameters: 5 },
+                { name: 'Complete Blood Count (CBC)', parameters: 18 }
+            ];
+
+            // Helper function to get current date string in YYYY-MM-DD for the date input default
+            const getTodayDateString = () => {
+                const today = new Date();
+                const year = today.getFullYear();
+                const month = String(today.getMonth() + 1).padStart(2, '0');
+                const day = String(today.getDate()).padStart(2, '0');
+                return `${year}-${month}-${day}`;
+            };
+
+            const [patientType, setPatientType] = useState('OPD');
+            const [patientAge, setPatientAge] = useState('');
+            const [patientSex, setPatientSex] = useState('Male');
+            const [patientCount, setPatientCount] = useState('1');
+            const [selectedTestIndex, setSelectedTestIndex] = useState('0');
+            const [selectedTestsBasket, setSelectedTestsBasket] = useState([]);
+            const [notes, setNotes] = useState('');
+            const [customDate, setCustomDate] = useState(getTodayDateString());
+
+            const [newTestName, setNewTestName] = useState('');
+            const [newTestParams, setNewTestParams] = useState('');
+            const [showTestModal, setShowTestModal] = useState(false);
+
+            // Fetch structural test definitions and database record items on component initialization
+            useEffect(() => {
+                fetchInitialData();
+            }, []);
+
+            const fetchInitialData = async () => {
+                try {
+                    // Fetch existing logs from 'lab_entries' ordered by creation sequence descending
+                    const { data: logData, error: logError } = await supabase
+                        .from('lab_entries')
+                        .select('*')
+                        .order('created_at', { ascending: false });
+                    
+                    if (logError) throw logError;
+                    if (logData) setEntries(logData);
+
+                    // Fetch registered template setups from 'test_directory'
+                    let { data: testData, error: testError } = await supabase
+                        .from('test_directory')
+                        .select('*')
+                        .order('id', { ascending: true });
+
+                    if (testError) throw testError;
+
+                    // Fallback configuration check: Seed default parameters if storage structure returns blank
+                    if (!testData || testData.length === 0) {
+                        const { data: seededData, error: seedError } = await supabase
+                            .from('test_directory')
+                            .insert(defaultTestDirectory)
+                            .select();
+                        if (seedError) throw seedError;
+                        testData = seededData;
+                    }
+                    if (testData) setTestDirectory(testData);
+
+                } catch (err) {
+                    console.error("Database connection synchronization runtime error:", err.message);
+                    alert("Failed to initialize remote data tables from Supabase. Review console log output configurations.");
+                }
+            };
+
+            const addTestToBasket = () => {
+                const testObj = testDirectory[parseInt(selectedTestIndex)];
+                if (!testObj) return;
+
+                if (selectedTestsBasket.some(t => t.name === testObj.name)) {
+                    alert("This test is already included in the current patient bundle.");
+                    return;
+                }
+
+                setSelectedTestsBasket([...selectedTestsBasket, testObj]);
+            };
+
+            const removeTestFromBasket = (indexToRemove) => {
+                setSelectedTestsBasket(selectedTestsBasket.filter((_, idx) => idx !== indexToRemove));
+            };
+
+            const handleAddTestToDirectory = async (e) => {
+                e.preventDefault();
+                const name = newTestName.trim();
+                const params = parseInt(newTestParams) || 0;
+
+                if (!name || params <= 0) {
+                    alert("Please enter a valid test name and parameter count greater than 0.");
+                    return;
+                }
+
+                if (testDirectory.some(t => t.name.toLowerCase() === name.toLowerCase())) {
+                    alert("A test with this name already exists!");
+                    return;
+                }
+
+                try {
+                    const { data, error } = await supabase
+                        .from('test_directory')
+                        .insert([{ name, parameters: params }])
+                        .select();
+
+                    if (error) throw error;
+
+                    setTestDirectory([...testDirectory, ...data]);
+                    setNewTestName('');
+                    setNewTestParams('');
+                    setShowTestModal(false);
+                } catch (err) {
+                    alert("Error saving test profile template: " + err.message);
+                }
+            };
+
+            const handleSubmitEntry = async (e) => {
+                e.preventDefault();
+                const age = parseInt(patientAge) || 0;
+                const count = parseInt(patientCount) || 1;
+
+                if (age <= 0) {
+                    alert("Please enter a valid patient age.");
+                    return;
+                }
+
+                if (count <= 0) {
+                    alert("Please enter a valid patient count of 1 or more.");
+                    return;
+                }
+
+                if (selectedTestsBasket.length === 0) {
+                    alert("Please add at least one test to the patient's selection bundle.");
+                    return;
+                }
+
+                const cumulativeParamsEach = selectedTestsBasket.reduce((sum, t) => sum + t.parameters, 0);
+                const combinedTestNames = selectedTestsBasket.map(t => t.name).join(' + ');
+                const totalTests = selectedTestsBasket.length; 
+                const totalParameters = cumulativeParamsEach;
+
+                // Process entered date string. Fallback to current date if missing or blank.
+                let finalFormattedDate;
+                if (customDate) {
+                    const [year, month, day] = customDate.split('-');
+                    finalFormattedDate = `${day}/${month}/${year}`;
+                } else {
+                    finalFormattedDate = new Date().toLocaleDateString('en-IN');
+                }
+
+                const newEntriesBatch = [];
+                const currentTimeString = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+
+                for (let i = 0; i < count; i++) {
+                    newEntriesBatch.push({
+                        date: finalFormattedDate,
+                        time: currentTimeString,
+                        patientType,
+                        age,
+                        sex: patientSex,
+                        testName: combinedTestNames,
+                        basketItems: selectedTestsBasket.map(t => ({ name: t.name, parameters: t.parameters })),
+                        parametersPerTest: cumulativeParamsEach,
+                        totalTests,
+                        totalParameters,
+                        notes: notes.trim() || 'N/A'
+                    });
+                }
+
+                try {
+                    const { data, error } = await supabase
+                        .from('lab_entries')
+                        .insert(newEntriesBatch)
+                        .select();
+
+                    if (error) throw error;
+
+                    setEntries([...data, ...entries]);
+                    setPatientAge('');
+                    setPatientCount('1');
+                    setNotes('');
+                    setSelectedTestsBasket([]);
+                    setCustomDate(getTodayDateString()); // reset to default current date
+                } catch (err) {
+                    alert("Error logging batch entry collection to Supabase server: " + err.message);
+                }
+            };
+
+            const deleteEntry = async (id) => {
+                if (window.confirm("Are you sure you want to delete this specific record line?")) {
+                    try {
+                        const { error } = await supabase
+                            .from('lab_entries')
+                            .delete()
+                            .eq('id', id);
+
+                        if (error) throw error;
+                        setEntries(entries.filter(entry => entry.id !== id));
+                    } catch (err) {
+                        alert("Error removing record index line: " + err.message);
+                    }
+                }
+            };
+
+            const deleteTestFromDirectory = async (indexToDelete) => {
+                if (testDirectory.length <= 1) {
+                    alert("You must maintain at least 1 test profile in your library configuration.");
+                    return;
+                }
+                const testObj = testDirectory[indexToDelete];
+                if (window.confirm(`Delete "${testObj.name}" from your active template selections?`)) {
+                    try {
+                        const { error } = await supabase
+                            .from('test_directory')
+                            .delete()
+                            .eq('id', testObj.id);
+
+                        if (error) throw error;
+
+                        setTestDirectory(testDirectory.filter((_, idx) => idx !== indexToDelete));
+                        setSelectedTestIndex('0');
+                    } catch (err) {
+                        alert("Error executing template removal parameter drop: " + err.message);
+                    }
+                }
+            };
+
+            const clearAllData = async () => {
+                if (window.confirm("CRITICAL AUDIT NOTICE: This permanently clears all historically logged records from your Supabase table server. Active test setups will be preserved. Proceed?")) {
+                    try {
+                        // Truncate operation mock up filtering via row matching logic
+                        const { error } = await supabase
+                            .from('lab_entries')
+                            .delete()
+                            .neq('notes', 'CRITICAL_SYSTEM_RESERVED_VAL_xyz_9999'); 
+
+                        if (error) throw error;
+                        setEntries([]);
+                    } catch (err) {
+                        alert("Error resetting transactional metrics data pool: " + err.message);
+                    }
+                }
+            };
+
+            // Enhanced pipeline counting parameters segmented by OPD and IPD
+            // Also tracks counts per individual test name dynamically
+            const metrics = entries.reduce((acc, curr) => {
+                if (curr.patientType === 'OPD') {
+                    acc.opdPatients += 1;
+                    acc.opdParameters += curr.totalParameters;
+                } else {
+                    acc.ipdPatients += 1;
+                    acc.ipdParameters += curr.totalParameters;
+                }
+                acc.totalPatients += 1;
+                acc.totalTests += curr.totalTests;
+                acc.totalParameters += curr.totalParameters;
+
+                // Aggregate counts for individual tests
+                const items = curr.basketItems || curr.testName.split(' + ').map(name => ({ name: name.trim() }));
+                items.forEach(item => {
+                    if (item.name) {
+                        acc.individualTestCounts[item.name] = (acc.individualTestCounts[item.name] || 0) + 1;
+                    }
+                });
+
+                return acc;
+            }, { 
+                opdPatients: 0, 
+                ipdPatients: 0, 
+                totalPatients: 0, 
+                totalTests: 0, 
+                totalParameters: 0,
+                opdParameters: 0,
+                ipdParameters: 0,
+                individualTestCounts: {}
+            });
+
+            // Re-architected Multi-Section Matrix Spreadsheet Format Generator
+            const exportToCSV = () => {
+                if (entries.length === 0) return alert("No metrics logged yet to build a spreadsheet document.");
+
+                // 1. Extract sorted unique chronological log dates
+                const uniqueDatesSet = new Set();
+                entries.forEach(e => { if (e.date) uniqueDatesSet.add(e.date); });
+                const sortedDates = Array.from(uniqueDatesSet).sort((a, b) => {
+                    const [d1, m1, y1] = a.split('/').map(Number);
+                    const [d2, m2, y2] = b.split('/').map(Number);
+                    return new Date(y1, m1 - 1, d1) - new Date(y2, m2 - 1, d2);
+                });
+
+                // 2. Identify all unique test profile rows
+                const uniqueTestNamesSet = new Set();
+                testDirectory.forEach(t => uniqueTestNamesSet.add(t.name.trim()));
+                entries.forEach(e => {
+                    const items = e.basketItems || e.testName.split(' + ').map(name => ({ name: name.trim() }));
+                    items.forEach(item => { if (item.name) uniqueTestNamesSet.add(item.name.trim()); });
+                });
+                const allTestNames = Array.from(uniqueTestNamesSet).filter(Boolean);
+
+                // 3. Initialize dynamic multi-dimensional count structure mapping
+                const matrixCount = {};
+                allTestNames.forEach(tName => {
+                    matrixCount[tName] = {};
+                    sortedDates.forEach(dStr => {
+                        const matchDir = testDirectory.find(td => td.name.trim() === tName);
+                        matrixCount[tName][dStr] = {
+                            testCount: 0,
+                            paramWeight: matchDir ? matchDir.parameters : 0
+                        };
+                    });
+                });
+
+                // 4. Fill matrix counts dynamically
+                entries.forEach(e => {
+                    const dStr = e.date;
+                    const items = e.basketItems || e.testName.split(' + ').map(name => ({ name: name.trim(), parameters: 0 }));
+                    items.forEach(item => {
+                        const targetedName = item.name.trim();
+                        if (matrixCount[targetedName] && matrixCount[targetedName][dStr] !== undefined) {
+                            matrixCount[targetedName][dStr].testCount += 1;
+                            if (item.parameters && Number(item.parameters) > 0) {
+                                matrixCount[targetedName][dStr].paramWeight = Number(item.parameters);
+                            }
+                        }
+                    });
+                });
+
+                // 5. Build dynamic interleaving headers row sequence
+                const p1Headers = ["Test Name"];
+                sortedDates.forEach(date => {
+                    p1Headers.push(`"${date} (Tests)"`);
+                    p1Headers.push(`"${date} (Parameters)"`);
+                });
+                p1Headers.push("Total Tests");
+                p1Headers.push("Total Parameters");
+
+                // 6. Build Row Cells for tests and prepare summary array structures
+                const p1Rows = [];
+                const columnTotals = {};
+                sortedDates.forEach(dStr => {
+                    columnTotals[dStr] = { tests: 0, params: 0 };
+                });
+                let grandTotalTests = 0;
+                let grandTotalParams = 0;
+
+                allTestNames.forEach(tName => {
+                    const rowCells = [`"${tName.replace(/"/g, '""')}"`];
+                    let rowTotalTests = 0;
+                    let rowTotalParams = 0;
+
+                    sortedDates.forEach(date => {
+                        const count = matrixCount[tName][date].testCount || 0;
+                        const weight = matrixCount[tName][date].paramWeight || 0;
+                        const calculatedParams = count * weight;
+
+                        rowCells.push(count);
+                        rowCells.push(calculatedParams);
+
+                        rowTotalTests += count;
+                        rowTotalParams += calculatedParams;
+
+                        columnTotals[date].tests += count;
+                        columnTotals[date].params += calculatedParams;
+                    });
+
+                    rowCells.push(rowTotalTests);
+                    rowCells.push(rowTotalParams);
+                    grandTotalTests += rowTotalTests;
+                    grandTotalParams += rowTotalParams;
+
+                    p1Rows.push(rowCells.join(","));
+                });
+
+                // 7. Generate final row totals at the very bottom
+                const finalTotalRow = ["\"Total\""];
+                sortedDates.forEach(date => {
+                    finalTotalRow.push(columnTotals[date].tests);
+                    finalTotalRow.push(columnTotals[date].params);
+                });
+                finalTotalRow.push(grandTotalTests);
+                finalTotalRow.push(grandTotalParams);
+                p1Rows.push(finalTotalRow.join(","));
+
+                // 8. Generate Section 2 lines for high-level Geriatric patient logs (Age >= 60 counts only)
+                let geriatricMaleCount = 0;
+                let geriatricFemaleCount = 0;
+
+                entries.forEach(e => {
+                    if (Number(e.age) >= 60) {
+                        if (e.sex === 'Male') geriatricMaleCount++;
+                        else if (e.sex === 'Female') geriatricFemaleCount++;
+                    }
+                });
+
+                const totalGeriatricPatients = geriatricMaleCount + geriatricFemaleCount;
+
+                const p2Lines = [
+                    "",
+                    "===================================================",
+                    "PAGE 2: GERIATRIC PATIENT SUMMARY (AGE >=60)",
+                    "===================================================",
+                    "Category,Patient Count",
+                    `"Male Patients (>=60 Years)",${geriatricMaleCount}`,
+                    `"Female Patients (>=60 Years)",${geriatricFemaleCount}`,
+                    `"Total Patients (>=60 Years)",${totalGeriatricPatients}`
+                ];
+
+                // Form final combined multi-section payload
+                const finalCsvString = 
+                    "===================================================\n" +
+                    "PAGE 1: LABORATORY COMPREHENSIVE SUMMARY REPORT\n" +
+                    "===================================================\n" +
+                    p1Headers.join(",") + "\n" + 
+                    p1Rows.join("\n") + "\n" + 
+                    p2Lines.join("\n");
+
+                // Download execution anchor dispatching
+                const blob = new Blob([new Uint8Array([0xEF, 0xBB, 0xBF]), finalCsvString], { type: "text/csv;charset=utf-8;" });
+                const link = document.createElement("a");
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", `Lab_Comprehensive_Summary_${new Date().toISOString().split('T')[0]}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            };
+
+            return (
+                <div className="min-h-screen p-4 md:p-6 text-gray-800 font-sans max-w-7xl mx-auto">
+                    {/* Header Banner */}
+                    <header className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center border-b border-gray-200 pb-4 gap-4">
+                        <div>
+                            <h1 className="text-2xl md:text-3xl font-extrabold text-teal-800 tracking-tight">Lab Statistics & Parameter Counter</h1>
+                            <p className="text-xs md:text-sm text-gray-500 mt-0.5">Secure cloud synchronization database storage powered by Supabase.</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2 w-full md:w-auto">
+                            <button onClick={() => setShowTestModal(true)} className="flex-1 md:flex-none bg-slate-600 hover:bg-slate-700 text-white px-3 py-2 rounded-lg text-xs md:text-sm font-semibold transition shadow-sm">
+                                ⚙️ Setup Test Library
+                            </button>
+                            <button onClick={exportToCSV} className="flex-1 md:flex-none bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-xs md:text-sm font-semibold transition shadow-sm">
+                                📥 Save to Excel (.CSV)
+                            </button>
+                            <button onClick={clearAllData} className="bg-rose-600 hover:bg-rose-700 text-white px-3 py-2 rounded-lg text-xs md:text-sm font-semibold transition shadow-sm">
+                                ⚠️ Reset Records
+                            </button>
+                        </div>
+                    </header>
+
+                    {/* Dashboard Scorecards */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-4">
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Total Patients</p>
+                            <p className="text-2xl font-black text-gray-800 mt-1">{metrics.totalPatients}</p>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-teal-500">
+                            <p className="text-[10px] font-bold text-teal-600 uppercase tracking-wider">OPD Patients</p>
+                            <p className="text-2xl font-black text-teal-700 mt-1">{metrics.opdPatients}</p>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-indigo-500">
+                            <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">IPD Patients</p>
+                            <p className="text-2xl font-black text-indigo-700 mt-1">{metrics.ipdPatients}</p>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-amber-500">
+                            <p className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Total Tests</p>
+                            <p className="text-2xl font-black text-amber-700 mt-1">{metrics.totalTests}</p>
+                        </div>
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-purple-500">
+                            <p className="text-[10px] font-bold text-purple-600 uppercase tracking-wider">Total Parameters</p>
+                            <p className="text-2xl font-black text-purple-700 mt-1">{metrics.totalParameters}</p>
+                        </div>
+                        {/* New Scorecard: OPD Parameter Results */}
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-teal-400">
+                            <p className="text-[10px] font-bold text-teal-500 uppercase tracking-wider">OPD Parameters</p>
+                            <p className="text-2xl font-black text-teal-600 mt-1">{metrics.opdParameters}</p>
+                        </div>
+                        {/* New Scorecard: IPD Parameter Results */}
+                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-indigo-400">
+                            <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">IPD Parameters</p>
+                            <p className="text-2xl font-black text-indigo-600 mt-1">{metrics.ipdParameters}</p>
+                        </div>
+                    </div>
+
+                    {/* Breakdown of Individual Test Counts Container placed under total tests card area row */}
+                    <div className="bg-amber-50/50 border border-amber-200/70 rounded-xl p-4 mb-6">
+                        <p className="text-xs font-bold text-amber-800 uppercase tracking-wider mb-2.5">📊 Individual Test Distribution Metrics</p>
+                        {testDirectory.length === 0 ? (
+                            <p className="text-xs text-amber-600 italic">No directory templates configured.</p>
+                        ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+                                {testDirectory.map((test, index) => {
+                                    const currentCount = metrics.individualTestCounts[test.name] || 0;
+                                    return (
+                                        <div key={index} className="bg-white p-3 rounded-lg border border-gray-200 shadow-2xs flex flex-col justify-between">
+                                            <span className="text-xs font-medium text-gray-600 truncate" title={test.name}>{test.name}</span>
+                                            <div className="flex justify-between items-baseline mt-2">
+                                                <span className="text-lg font-extrabold text-amber-700">{currentCount}</span>
+                                                <span className="text-[10px] font-mono text-gray-400">({test.parameters}p)</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        {/* Interactive Data Input Panel */}
+                        <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 h-fit">
+                            <h2 className="text-lg font-bold text-gray-700 mb-4 border-b pb-2">Patient Lab Entry</h2>
+                            <form onSubmit={handleSubmitEntry} className="space-y-4">
+                                
+                                <div>
+                                    <label className="block text-[10px] font-bold text-gray-400 uppercase mb-1.5 tracking-wider">Department</label>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setPatientType('OPD')}
+                                            className={`py-2 text-center rounded-lg font-bold transition text-xs md:text-sm ${patientType === 'OPD' ? 'bg-teal-50 text-teal-700 border-2 border-teal-600' : 'bg-gray-100 text-gray-600 border border-transparent hover:bg-gray-200'}`}
+                                        >
+                                            OPD (Outpatient)
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setPatientType('IPD')}
+                                            className={`py-2 text-center rounded-lg font-bold transition text-xs md:text-sm ${patientType === 'IPD' ? 'bg-indigo-50 text-indigo-700 border-2 border-indigo-600' : 'bg-gray-100 text-gray-600 border border-transparent hover:bg-gray-200'}`}
+                                        >
+                                            IPD (Inpatient)
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Custom Date Selection Segment */}
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Logging Date</label>
+                                    <input
+                                        type="date"
+                                        value={customDate}
+                                        onChange={(e) => setCustomDate(e.target.value)}
+                                        className="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm bg-white text-gray-700"
+                                    />
+                                    <p className="text-[10px] text-gray-400 mt-1">Leaves default value tracking to today's current session date if left unmodified.</p>
+                                </div>
+
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div>
+                                        <label className="block text-sm font-semibold text-gray-700 mb-1">Age</label>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            placeholder="e.g., 34"
+                                            value={patientAge}
+                                            onChange={(e) => setPatientAge(e.target.value)}
+                                            className="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm"
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-semibold text-gray-700 mb-1">Sex</label>
+                                        <select
+                                            value={patientSex}
+                                            onChange={(e) => setPatientSex(e.target.value)}
+                                            className="w-full p-2 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm"
+                                        >
+                                            <option value="Male">Male</option>
+                                            <option value="Female">Female</option>
+                                            <option value="Other">Other</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-semibold text-gray-700 mb-1" title="Number of identical patients with these tests">Count</label>
+                                        <input
+                                            type="number"
+                                            min="1"
+                                            placeholder="1"
+                                            value={patientCount}
+                                            onChange={(e) => setPatientCount(e.target.value)}
+                                            className="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm font-semibold text-teal-700"
+                                            required
+                                        />
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Select Diagnostic Test</label>
+                                    <div className="flex gap-2">
+                                        <select
+                                            value={selectedTestIndex}
+                                            onChange={(e) => setSelectedTestIndex(e.target.value)}
+                                            className="flex-1 p-2 border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm"
+                                        >
+                                            {testDirectory.map((test, index) => (
+                                                <option key={index} value={index}>
+                                                    {test.name} ({test.parameters} params)
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <button
+                                            type="button"
+                                            onClick={addTestToBasket}
+                                            className="bg-teal-600 hover:bg-teal-700 text-white font-bold px-3 py-2 rounded-lg text-xs transition whitespace-nowrap"
+                                        >
+                                            + Add to Bundle
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Selected Patient Test Bundle</label>
+                                    {selectedTestsBasket.length === 0 ? (
+                                        <p className="text-xs text-gray-400 italic">No tests added yet. Use the selector above to add multiple profiles.</p>
+                                    ) : (
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {selectedTestsBasket.map((test, idx) => (
+                                                <span key={idx} className="inline-flex items-center gap-1 bg-teal-50 text-teal-800 text-xs font-semibold px-2 py-1 rounded border border-teal-200">
+                                                    {test.name}
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={() => removeTestFromBasket(idx)} 
+                                                        className="text-teal-500 hover:text-teal-800 font-bold ml-1 text-sm leading-none"
+                                                    >
+                                                        &times;
+                                                    </button>
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-semibold text-gray-700 mb-1">Remarks / Shift Operator Notes</label>
+                                    <input
+                                        type="text"
+                                        placeholder="e.g., Biochemistry Analyzer Batch A"
+                                        value={notes}
+                                        onChange={(e) => setNotes(e.target.value)}
+                                        className="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500 text-sm"
+                                    />
+                                </div>
+
+                                <button
+                                    type="submit"
+                                    className="w-full bg-teal-700 hover:bg-teal-800 text-white font-bold py-2.5 px-4 rounded-lg transition text-sm shadow-md mt-2"
+                                >
+                                    Log Patient Entry Line{parseInt(patientCount) > 1 ? `s (${patientCount}x)` : ''}
+                                </button>
+                            </form>
+                        </div>
+
+                        {/* Audit Log Table */}
+                        <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 lg:col-span-2 overflow-hidden flex flex-col">
+                            <h2 className="text-lg font-bold text-gray-700 mb-4 border-b pb-2">Active Session Breakdowns</h2>
+                            
+                            <div className="overflow-x-auto">
+                                {entries.length === 0 ? (
+                                    <div className="text-center py-16 text-gray-400 text-sm">
+                                        No data records logged for this session sequence yet.
+                                    </div>
+                                ) : (
+                                    <table className="w-full text-left border-collapse text-xs md:text-sm">
+                                        <thead>
+                                            <tr className="bg-gray-50 border-b border-gray-200 text-gray-400 uppercase tracking-wider text-[10px] font-bold">
+                                                <th className="p-2.5">Timestamp / Notes</th>
+                                                <th className="p-2.5">Dept</th>
+                                                <th className="p-2.5">Patient Details</th>
+                                                <th className="p-2.5">Test Bundle Details</th>
+                                                <th className="p-2.5 text-right">Parameters</th>
+                                                <th className="p-2.5 text-center">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-gray-100">
+                                            {entries.map((entry) => (
+                                                <tr key={entry.id} className="hover:bg-gray-50/70 transition">
+                                                    <td className="p-2.5">
+                                                        <span className="font-semibold text-gray-700 block">{entry.date}</span>
+                                                        <span className="text-[11px] text-gray-400 font-medium block truncate max-w-[140px]">{entry.time} • {entry.notes}</span>
+                                                    </td>
+                                                    <td className="p-2.5">
+                                                        <span className={`px-2 py-0.5 rounded text-[10px] font-black ${entry.patientType === 'OPD' ? 'bg-teal-50 text-teal-700' : 'bg-indigo-50 text-indigo-700'}`}>
+                                                            {entry.patientType}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-2.5">
+                                                        <span className="font-semibold text-gray-700 block">{entry.age} Yrs</span>
+                                                        <span className="text-[11px] text-gray-400 block font-medium">{entry.sex}</span>
+                                                    </td>
+                                                    <td className="p-2.5">
+                                                        <span className="font-medium text-gray-800 block truncate max-w-[150px]" title={entry.testName}>{entry.testName}</span>
+                                                        <span className="text-[10px] text-gray-400 block">x{entry.totalTests} profiles run</span>
+                                                    </td>
+                                                    <td className="p-2.5 text-right font-mono font-bold text-purple-700">{entry.totalParameters}</td>
+                                                    <td className="p-2.5 text-center">
+                                                        <button 
+                                                            onClick={() => deleteEntry(entry.id)} 
+                                                            className="text-xs font-bold text-rose-500 hover:text-rose-700 transition"
+                                                        >
+                                                            Remove
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Setup Test Library Modal */}
+                    {showTestModal && (
+                        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden max-h-[90vh] flex flex-col">
+                                <header className="bg-gray-50 p-4 border-b flex justify-between items-center">
+                                    <h3 className="text-md font-bold text-gray-700">Test Directory Manager</h3>
+                                    <button onClick={() => setShowTestModal(false)} className="text-gray-400 hover:text-gray-600 font-bold text-xl">&times;</button>
+                                </header>
+                                
+                                <div className="p-4 overflow-y-auto flex-1 space-y-4">
+                                    <form onSubmit={handleAddTestToDirectory} className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-3">
+                                        <p className="text-xs font-bold text-slate-600 uppercase tracking-wider">Configure New Test Template</p>
+                                        <div>
+                                            <label className="block text-xs font-semibold text-gray-600 mb-1">Test Title</label>
+                                            <input 
+                                                type="text" 
+                                                placeholder="e.g., Kidney Function Test (KFT)" 
+                                                value={newTestName}
+                                                onChange={(e) => setNewTestName(e.target.value)}
+                                                className="w-full p-2 border border-gray-300 rounded text-xs bg-white"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-semibold text-gray-600 mb-1">Exact Parameter Count</label>
+                                            <input 
+                                                type="number" 
+                                                min="1"
+                                                placeholder="Number of items tested within profile" 
+                                                value={newTestParams}
+                                                onChange={(e) => setNewTestParams(e.target.value)}
+                                                className="w-full p-2 border border-gray-300 rounded text-xs bg-white"
+                                            />
+                                        </div>
+                                        <button type="submit" className="w-full bg-slate-700 hover:bg-slate-800 text-white font-bold py-1.5 rounded text-xs transition">
+                                            Save Template to Menu
+                                        </button>
+                                    </form>
+
+                                    <div className="space-y-2">
+                                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider">Configured Templates Directory</p>
+                                        <div className="divide-y divide-gray-100 max-h-[200px] overflow-y-auto border border-gray-100 rounded-lg bg-white">
+                                            {testDirectory.map((test, idx) => (
+                                                <div key={idx} className="p-2.5 flex justify-between items-center text-xs hover:bg-gray-50">
+                                                    <div>
+                                                        <p className="font-semibold text-gray-800">{test.name}</p>
+                                                        <p className="text-[10px] text-gray-400">{test.parameters} Parameters</p>
+                                                    </div>
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={() => deleteTestFromDirectory(idx)}
+                                                        className="text-[11px] text-rose-500 hover:text-rose-700 font-medium"
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <footer className="bg-gray-50 p-3 border-t text-right">
+                                    <button onClick={() => setShowTestModal(false)} className="bg-gray-300 hover:bg-gray-400 text-gray-700 font-bold py-1.5 px-4 rounded text-xs transition">
+                                        Close Settings
+                                    </button>
+                                </footer>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<LabTracker />);
+    </script>
+</body>
+</html>
